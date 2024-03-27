@@ -1,4 +1,4 @@
-# BSBM-Jena
+# Dockerized BSBM
 
 This is the Dockerized version of the Berlin SPARQL Benchmark.
 
