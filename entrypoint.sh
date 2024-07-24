@@ -11,24 +11,13 @@ fi
 
 command=$1
 
-# create /data folder if it doesn't exist
-mkdir -p /data
-chmod 777 /data
+# create data folder if it doesn't exist
+mkdir -p data
+chmod 777 data
 
-if [ "$command" = "generate" ] || [ "$command" = "generate-n" ]; then
+if [ "$command" = "generate-n" ]; then
     ./$@
-
-    # get the -fn parameter value, if it exists else set it to "dataset"
-    fn=$(echo $@ | grep -oP '(?<=-fn )[^ ]+' || echo "dataset")
-    # get the -s parameter value, if it exists else set it to "nt"
-    s=$(echo $@ | grep -oP '(?<=-s )[^ ]+' || echo "nt")
-    mv $fn*.$s /data
-
-    # check if the -ud parameter exists
-    if [[ $@ == *"-ud"* ]]; then
-        udf=$(echo $@ | grep -oP '(?<=-udf )[^ ]+' || echo "dataset_update")
-        mv $udf*.nt /data
-    fi
+    mv dataset*.ttl data
 elif [ "$command" = "generate" ]; then
     ./$@
 
@@ -36,25 +25,25 @@ elif [ "$command" = "generate" ]; then
     fn=$(echo $@ | grep -oP '(?<=-fn )[^ ]+' || echo "dataset")
     # get the -s parameter value, if it exists else set it to "nt"
     s=$(echo $@ | grep -oP '(?<=-s )[^ ]+' || echo "nt")
-    mv $fn*.$s /data
+    mv $fn*.$s data
 
     # check if the -ud parameter exists
     if [[ $@ == *"-ud"* ]]; then
         udf=$(echo $@ | grep -oP '(?<=-udf )[^ ]+' || echo "dataset_update")
-        mv $udf*.nt /data
+        mv $udf*.nt data
     fi
 elif [ "$command" = "testdriver" ]; then
     ./$@
 
     # get the -o parameter value, if it exists else set it to "dataset"
     o=$(echo $@ | grep -oP '(?<=-o )[^ ]+' || echo "benchmark_result.xml")
-    mv $o /data
+    mv $o data
 elif [ "$command" = "qualification" ]; then
     ./$@
 
     # get the -ql parameter value, if it exists else set it to "dataset"
     ql=$(echo $@ | grep -oP '(?<=-ql )[^ ]+' || echo "qual.log")
-    mv $ql /data
+    mv $ql data
 else
     echo "Invalid command: $command"
     exit 1
