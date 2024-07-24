@@ -1,8 +1,9 @@
 #!/bin/bash
 
 if [ $# == 0 ]; then
-    echo "Usage: $0 [generate|testdriver|qualification] ?[args]"
+    echo "Usage: $0 [generate|generate-n|testdriver|qualification] ?[args]"
     ./generate -help
+    ./generate-n -help
     ./testdriver -help
     ./qualification -help
     exit 1
@@ -14,7 +15,21 @@ command=$1
 mkdir -p /data
 chmod 777 /data
 
-if [ "$command" = "generate" ]; then
+if [ "$command" = "generate" ] || [ "$command" = "generate-n" ]; then
+    ./$@
+
+    # get the -fn parameter value, if it exists else set it to "dataset"
+    fn=$(echo $@ | grep -oP '(?<=-fn )[^ ]+' || echo "dataset")
+    # get the -s parameter value, if it exists else set it to "nt"
+    s=$(echo $@ | grep -oP '(?<=-s )[^ ]+' || echo "nt")
+    mv $fn*.$s /data
+
+    # check if the -ud parameter exists
+    if [[ $@ == *"-ud"* ]]; then
+        udf=$(echo $@ | grep -oP '(?<=-udf )[^ ]+' || echo "dataset_update")
+        mv $udf*.nt /data
+    fi
+elif [ "$command" = "generate" ]; then
     ./$@
 
     # get the -fn parameter value, if it exists else set it to "dataset"

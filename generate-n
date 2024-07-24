@@ -1,0 +1,26 @@
+#!/bin/bash
+if [ ! -e "./generate-n" ]
+then
+  echo "Please run this script from the exec directory"
+  exit 1
+fi
+if [ $# == 0 ]
+then
+  echo "For generator options type ./generate-n -help"
+fi
+# check that $1 is a integer
+if ! [[ $1 =~ ^[0-9]+$ ]]
+then
+  echo "Please provide an integer as the first argument"
+  exit 1
+fi
+
+number_of_versions=$1
+echo "Generating $number_of_versions versions"
+
+# loop through the number of versions and call ./generate
+for i in $(seq 1 $number_of_versions)
+do
+  echo "Generating version $i"
+  ./generate "${@:2}"
+done

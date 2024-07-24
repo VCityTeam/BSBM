@@ -10,6 +10,7 @@ This is the Dockerized version of the Berlin SPARQL Benchmark.
 ## Usage
 ```bash
 docker run -v "$PWD:/data" vcity/bsbm generate [args]
+docker run -v "$PWD:/data" vcity/bsbm generate-n [args]
 docker run -v "$PWD:/data" vcity/bsbm qualification [args]
 docker run -v "$PWD:/data" vcity/bsbm testdriver [args]
 ```
@@ -18,6 +19,7 @@ If you want more information about the different arguments, please refer to the 
 
 ```bash
 docker run vcity/bsbm generate -help
+docker run vcity/bsbm generate-n -help
 docker run vcity/bsbm qualification -help
 docker run vcity/bsbm testdriver -help
 ```
