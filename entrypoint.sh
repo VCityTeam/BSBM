@@ -12,6 +12,8 @@ fi
 command=$1
 data_destination=$DATA_DESTINATION
 
+echo "destination folder: $data_destination"
+
 # create data destination folder if it doesn't exist
 mkdir -p $data_destination
 chmod 777 $data_destination
