@@ -10,7 +10,7 @@ if [ $# == 0 ]; then
 fi
 
 command=$1
-data_destination=$DATA_DESTINATION
+data_destination=data/$DATA_DESTINATION
 
 echo "destination folder: $data_destination"
 
