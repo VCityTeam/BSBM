@@ -6,26 +6,74 @@ then
 fi
 if [ $# == 0 ] || [ $1 == "-help" ]
 then
-  echo "Generator options: ./generate-n <number of versions> ?<init number of products> ?<products step>"
-fi
-# check that $1 is a integer
-if ! [[ $1 =~ ^[0-9]+$ ]]
-then
-  echo "Please provide an integer as the first argument"
+  show_generator_options
   exit 1
 fi
 
-number_of_versions=$1
-products_number=${2:-100}
-products_step=${3:-1000}
+show_generator_options() {
+  echo "Generator options:"
+  echo "  ./generate-n --versions|-v <number> [--products|-p <number>] [--step|-s <number>] [--format|-f <format>]"
+  echo "Shortcuts: -v, -p, -s, -f"
+}
+
+# Default values
+output_format="ttl"
+
+# Parse named arguments and shortcuts
+while [[ $# -gt 0 ]]; do
+  key="$1"
+  case $key in
+    --versions|-v)
+      number_of_versions="$2"
+      shift; shift
+      ;;
+    --products|-p)
+      products_number="$2"
+      shift; shift
+      ;;
+    --step|-s)
+      products_step="$2"
+      shift; shift
+      ;;
+    --format|-f)
+      output_format="$2"
+      shift; shift
+      ;;
+    -h|--help)
+      show_generator_options
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
+
+# Set defaults if not provided
+number_of_versions=${number_of_versions:-}
+products_number=${products_number:-100}
+products_step=${products_step:-1000}
+
+if [ -z "$number_of_versions" ]; then
+  echo "Please provide --versions <number> (or -v <number>)"
+  exit 1
+fi
+# check that $number_of_versions is an integer
+if ! [[ $number_of_versions =~ ^[0-9]+$ ]]
+then
+  echo "Please provide an integer for --versions"
+  exit 1
+fi
 
 echo "Generating $number_of_versions versions"
 echo "Setting products to $products_number, products step to $products_step"
+echo "Output format: $output_format"
 
 # loop through the number of versions and call ./generate
 for i in $(seq 1 $number_of_versions)
 do
   echo "Generating version $i"
   echo "Generating $((products_number + i * products_step)) products"
-  ./generate -s ttl -pc $((products_number + i * products_step)) -fn "dataset-$i"
+  ./generate -s "$output_format" -pc $((products_number + i * products_step)) -fn "dataset-$i"
 done

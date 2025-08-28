@@ -20,7 +20,7 @@ chmod 777 $data_destination
 
 if [ "$command" = "generate-n" ]; then
     ./$@
-    mv dataset*.ttl $data_destination
+    mv dataset* $data_destination
 elif [ "$command" = "generate" ]; then
     ./$@
 
@@ -33,7 +33,7 @@ elif [ "$command" = "generate" ]; then
     # check if the -ud parameter exists
     if [[ $@ == *"-ud"* ]]; then
         udf=$(echo $@ | grep -oP '(?<=-udf )[^ ]+' || echo "dataset_update")
-        mv $udf*.nt $data_destination
+        mv $udf* $data_destination
     fi
 elif [ "$command" = "testdriver" ]; then
     ./$@
