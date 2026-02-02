@@ -12,8 +12,10 @@ fi
 
 show_generator_options() {
   echo "Generator options:"
-  echo "  ./generate-n --versions|-v <number> [--products|-p <number>] [--step|-s <number>] [--format|-f <format>]"
+  echo "  ./generate-n --versions|-v <number> [--products|-p <number>] [--step|-s <number>] [--format|-f <format>] [--var <percentage>]"
   echo "Shortcuts: -v, -p, -s, -f"
+  echo ""
+  echo "  --var <percentage>  Variability: percentage of products that change between versions (0-100, default: 0)"
 }
 
 # Default values
@@ -39,6 +41,10 @@ while [[ $# -gt 0 ]]; do
       output_format="$2"
       shift; shift
       ;;
+    --var)
+      variability="$2"
+      shift; shift
+      ;;
     -h|--help)
       show_generator_options
       exit 0
@@ -54,6 +60,7 @@ done
 number_of_versions=${number_of_versions:-}
 products_number=${products_number:-100}
 products_step=${products_step:-1000}
+variability=${variability:-0}
 
 if [ -z "$number_of_versions" ]; then
   echo "Please provide --versions <number> (or -v <number>)"
@@ -66,14 +73,72 @@ then
   exit 1
 fi
 
+# check that variability is an integer between 0 and 100
+if ! [[ $variability =~ ^[0-9]+$ ]] || [ "$variability" -lt 0 ] || [ "$variability" -gt 100 ]
+then
+  echo "Please provide an integer between 0 and 100 for --var"
+  exit 1
+fi
+
 echo "Generating $number_of_versions versions"
 echo "Setting products to $products_number, products step to $products_step"
 echo "Output format: $output_format"
+echo "Variability: $variability%"
+
+# Build classpath for Java tools
+CP=.
+SEP=':'
+if [ "$(uname)" = "Cygwin" ]; then SEP=';'; fi
+for jar in lib/*.jar
+do
+  if [ ! -e "$jar" ]; then continue; fi
+  CP="$CP$SEP$jar"
+done
 
 # loop through the number of versions and call ./generate
+prev_nt_file=""
 for i in $(seq 1 $number_of_versions)
 do
+  current_products=$((products_number + i * products_step))
   echo "Generating version $i"
-  echo "Generating $((products_number + i * products_step)) products"
-  ./generate -s "$output_format" -pc $((products_number + i * products_step)) -fn "dataset-$i"
+  echo "Generating $current_products products"
+
+  if [ "$variability" -gt 0 ]; then
+    ppt=$((variability * current_products / 100))
+    if [ "$ppt" -lt 1 ]; then
+      ppt=1
+    fi
+    echo "Generating update dataset with $ppt products changed ($variability%)"
+    ./generate -s "$output_format" -pc "$current_products" -fn "dataset-$i" -ud -tc 1 -ppt "$ppt" -ufn "dataset-${i}_update"
+  else
+    ./generate -s "$output_format" -pc "$current_products" -fn "dataset-$i"
+  fi
+
+  # Generate N-Triples version for diff computation
+  if [ "$output_format" == "nt" ]; then
+    curr_nt_file="dataset-$i.nt"
+  else
+    echo "Generating N-Triples version for diff computation (version $i)"
+    ./generate -s nt -pc "$current_products" -fn ".diff_dataset-$i"
+    curr_nt_file=".diff_dataset-$i.nt"
+  fi
+
+  # Compute additions and deletions between consecutive versions
+  if [ -n "$prev_nt_file" ]; then
+    echo "Computing additions and deletions for version $i"
+    java -cp "$CP" -Xmx512M benchmark.tools.DatasetDiff \
+      "$prev_nt_file" "$curr_nt_file" \
+      "dataset-${i}_additions.nt" "dataset-${i}_deletions.nt"
+    # Clean up previous temp NT file
+    if [ "$output_format" != "nt" ]; then
+      rm -f "$prev_nt_file"
+    fi
+  fi
+
+  prev_nt_file="$curr_nt_file"
 done
+
+# Clean up last temp NT file
+if [ "$output_format" != "nt" ] && [ -n "$prev_nt_file" ]; then
+  rm -f "$prev_nt_file"
+fi
