@@ -1,4 +1,4 @@
-FROM eclipse-temurin:11
+FROM eclipse-temurin:26
 LABEL maintainer="vcity"
 LABEL description="This is a docker image for the BSBM project"
 

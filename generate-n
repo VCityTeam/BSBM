@@ -4,19 +4,108 @@ then
   echo "Please run this script from the exec directory"
   exit 1
 fi
-if [ $# == 0 ] || [ $1 == "-help" ]
+
+show_generator_options() {
+  echo "Generator options:"
+  echo "  ./generate-n --versions|-v <number> [--products|-p <number>] [--step|-s <number>] [--target|-t <number>] [--easing|-e <name|expr>] [--format|-f <format>] [--var <percentage>]"
+  echo "Shortcuts: -v, -p, -s, -t, -e, -f"
+  echo ""
+  echo "  --products|-p <number>  Initial product count for the first version (default: 100)"
+  echo "  --step|-s <number>      Product increment per version, linear mode (default: 1000)"
+  echo "  --target|-t <number>    Final product count for the last version. Enables easing mode:"
+  echo "                          the count is interpolated from --products to --target along the"
+  echo "                          chosen --easing curve. When set, --step is ignored."
+  echo "  --easing|-e <name|expr> Easing curve used in easing mode (default: linear). Either a named"
+  echo "                          curve or a raw awk expression of t (the version progress, 0..1)."
+  echo "                          Named curves:"
+  echo "                            linear"
+  echo "                            easeInSine  easeOutSine  easeInOutSine"
+  echo "                            easeInQuad  easeOutQuad  easeInOutQuad"
+  echo "                            easeInCubic easeOutCubic easeInOutCubic"
+  echo "                            easeInQuart easeOutQuart easeInOutQuart"
+  echo "                            easeInQuint easeOutQuint easeInOutQuint"
+  echo "                            easeInExpo  easeOutExpo  easeInOutExpo"
+  echo "                            easeInCirc  easeOutCirc  easeInOutCirc"
+  echo "                            easeInBack  easeOutBack  easeInOutBack"
+  echo "                            easeInElastic easeOutElastic easeInOutElastic"
+  echo "                            easeInBounce easeOutBounce easeInOutBounce"
+  echo "                          (Back and Elastic overshoot the [products,target] range.)"
+  echo "                          Example custom expression: -e 't*t*t' (same as easeInCubic)"
+  echo "  --var <percentage>      Variability: percentage of products that change between versions (0-100, default: 0)"
+}
+
+# Named easing curves expressed as awk expressions of t (progress in [0,1]).
+# The awk BEGIN block provides pi, the constants c1..c5 and the bounceOut()
+# function used below. Anything not listed here is treated as a raw awk
+# expression of t, so custom curves work out of the box.
+# Note: the Back and Elastic curves intentionally overshoot the [0,1] range
+# (so product counts may dip below --products or above --target mid-sequence);
+# the first and last versions still equal --products and --target exactly.
+declare -A EASINGS=(
+  [linear]="t"
+  [easeInSine]="1-cos(t*pi/2)"
+  [easeOutSine]="sin(t*pi/2)"
+  [easeInOutSine]="-(cos(pi*t)-1)/2"
+  [easeInQuad]="t*t"
+  [easeOutQuad]="1-(1-t)*(1-t)"
+  [easeInOutQuad]="(t<0.5)?(2*t*t):(1-(-2*t+2)^2/2)"
+  [easeInCubic]="t^3"
+  [easeOutCubic]="1-(1-t)^3"
+  [easeInOutCubic]="(t<0.5)?(4*t^3):(1-(-2*t+2)^3/2)"
+  [easeInQuart]="t^4"
+  [easeOutQuart]="1-(1-t)^4"
+  [easeInOutQuart]="(t<0.5)?(8*t^4):(1-(-2*t+2)^4/2)"
+  [easeInQuint]="t^5"
+  [easeOutQuint]="1-(1-t)^5"
+  [easeInOutQuint]="(t<0.5)?(16*t^5):(1-(-2*t+2)^5/2)"
+  [easeInExpo]="(t==0)?0:(2^(10*t-10))"
+  [easeOutExpo]="(t==1)?1:(1-2^(-10*t))"
+  [easeInOutExpo]="(t==0)?0:((t==1)?1:((t<0.5)?(2^(20*t-10)/2):((2-2^(-20*t+10))/2)))"
+  [easeInCirc]="1-sqrt(1-t^2)"
+  [easeOutCirc]="sqrt(1-(t-1)^2)"
+  [easeInOutCirc]="(t<0.5)?((1-sqrt(1-(2*t)^2))/2):((sqrt(1-(-2*t+2)^2)+1)/2)"
+  [easeInBack]="c3*t^3-c1*t^2"
+  [easeOutBack]="1+c3*(t-1)^3+c1*(t-1)^2"
+  [easeInOutBack]="(t<0.5)?((2*t)^2*((c2+1)*2*t-c2))/2:((2*t-2)^2*((c2+1)*(2*t-2)+c2)+2)/2"
+  [easeInElastic]="(t==0)?0:((t==1)?1:(-(2^(10*t-10))*sin((10*t-10.75)*c4)))"
+  [easeOutElastic]="(t==0)?0:((t==1)?1:((2^(-10*t))*sin((10*t-0.75)*c4)+1))"
+  [easeInOutElastic]="(t==0)?0:((t==1)?1:((t<0.5)?(-(2^(20*t-10))*sin((20*t-11.125)*c5))/2:(2^(-20*t+10))*sin((20*t-11.125)*c5)/2+1))"
+  [easeInBounce]="1-bounceOut(1-t)"
+  [easeOutBounce]="bounceOut(t)"
+  [easeInOutBounce]="(t<0.5)?((1-bounceOut(1-2*t))/2):((1+bounceOut(2*t-1))/2)"
+)
+
+# ease_value <i> <n> <start> <target> <expr>
+# Echoes the (rounded, >=1) product count for version i of n, interpolating
+# from start to target along the easing expression expr (an awk expression of t).
+ease_value() {
+  local i="$1" n="$2" start="$3" target="$4" expr="$5"
+  awk -v i="$i" -v n="$n" -v start="$start" -v target="$target" '
+  # Base bounce curve (easeOutBounce); easeIn/InOut variants are derived from it.
+  function bounceOut(x){
+    if(x<1/2.75){return 7.5625*x*x}
+    else if(x<2/2.75){x-=1.5/2.75; return 7.5625*x*x+0.75}
+    else if(x<2.5/2.75){x-=2.25/2.75; return 7.5625*x*x+0.9375}
+    else {x-=2.625/2.75; return 7.5625*x*x+0.984375}
+  }
+  BEGIN{
+    pi=3.141592653589793
+    # Overshoot constants for the Back and Elastic families (from easings.net).
+    c1=1.70158; c3=c1+1; c2=c1*1.525
+    c4=(2*pi)/3; c5=(2*pi)/4.5
+    t=(n>1)?(i-1)/(n-1):0
+    e=('"$expr"')
+    v=int(start+e*(target-start)+0.5)
+    if(v<1) v=1
+    print v
+  }'
+}
+
+if [ $# == 0 ] || [ "$1" == "-help" ]
 then
   show_generator_options
   exit 1
 fi
-
-show_generator_options() {
-  echo "Generator options:"
-  echo "  ./generate-n --versions|-v <number> [--products|-p <number>] [--step|-s <number>] [--format|-f <format>] [--var <percentage>]"
-  echo "Shortcuts: -v, -p, -s, -f"
-  echo ""
-  echo "  --var <percentage>  Variability: percentage of products that change between versions (0-100, default: 0)"
-}
 
 # Default values
 output_format="ttl"
@@ -35,6 +124,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --step|-s)
       products_step="$2"
+      shift; shift
+      ;;
+    --target|-t)
+      products_target="$2"
+      shift; shift
+      ;;
+    --easing|-e)
+      easing="$2"
       shift; shift
       ;;
     --format|-f)
@@ -60,6 +157,7 @@ done
 number_of_versions=${number_of_versions:-}
 products_number=${products_number:-100}
 products_step=${products_step:-1000}
+products_target=${products_target:-}
 variability=${variability:-0}
 
 if [ -z "$number_of_versions" ]; then
@@ -80,8 +178,58 @@ then
   exit 1
 fi
 
+# Easing mode is enabled when a --target is provided. Otherwise the legacy
+# linear "products + i * step" progression is used.
+easing_mode=0
+if [ -n "$products_target" ]; then
+  easing_mode=1
+  if ! [[ $products_target =~ ^[0-9]+$ ]]; then
+    echo "Please provide an integer for --target"
+    exit 1
+  fi
+  # Easing interpolates between the first and last version, so it needs at least two.
+  if [ "$number_of_versions" -lt 2 ]; then
+    echo "Easing mode (--target) requires --versions >= 2"
+    exit 1
+  fi
+  # Default curve is linear, which reproduces an evenly-spaced ramp.
+  easing=${easing:-linear}
+  # Resolve a named curve, or fall back to treating the value as a raw awk
+  # expression of t (the version progress in [0,1]).
+  if [ -n "${EASINGS[$easing]+x}" ]; then
+    easing_expr="${EASINGS[$easing]}"
+  elif [[ $easing =~ ^[A-Za-z][A-Za-z0-9]*$ ]]; then
+    # A bare word that isn't a known curve is almost certainly a misspelled curve
+    # name. As an awk expression it would be an uninitialized variable (=0),
+    # silently flattening every version to --products, so reject it outright.
+    echo "Unknown easing curve: '$easing'. Run with -help to list the available curves."
+    exit 1
+  elif ! [[ $easing =~ (^|[^A-Za-z0-9_])t([^A-Za-z0-9_]|$) ]]; then
+    # A custom expression that never references t is a constant (or a typo); it
+    # would flatten the progression, so reject it rather than generate bad data.
+    echo "Custom --easing expression must be a function of t: '$easing'"
+    exit 1
+  else
+    easing_expr="$easing"
+  fi
+  # Fail fast if the expression is invalid (awk would otherwise error every
+  # version). Check both endpoints (t=0 and t=1) so curves with special-cased
+  # boundaries, e.g. the Expo/Elastic guards, are exercised.
+  if ! ease_value 1 "$number_of_versions" "$products_number" "$products_target" "$easing_expr" >/dev/null 2>&1 \
+     || ! ease_value "$number_of_versions" "$number_of_versions" "$products_number" "$products_target" "$easing_expr" >/dev/null 2>&1; then
+    echo "Invalid --easing expression: '$easing'"
+    exit 1
+  fi
+elif [ -n "$easing" ]; then
+  echo "--easing requires --target (or -t) to be set; ignoring --easing in linear mode" >&2
+fi
+
 echo "Generating $number_of_versions versions"
-echo "Setting products to $products_number, products step to $products_step"
+if [ "$easing_mode" -eq 1 ]; then
+  echo "Easing mode: products from $products_number to $products_target using '$easing'"
+else
+  echo "Setting products to $products_number, products step to $products_step"
+fi
 echo "Output format: $output_format"
 echo "Variability: $variability%"
 
@@ -99,7 +247,11 @@ done
 prev_nt_file=""
 for i in $(seq 1 $number_of_versions)
 do
-  current_products=$((products_number + i * products_step))
+  if [ "$easing_mode" -eq 1 ]; then
+    current_products=$(ease_value "$i" "$number_of_versions" "$products_number" "$products_target" "$easing_expr")
+  else
+    current_products=$((products_number + i * products_step))
+  fi
   echo "Generating version $i"
   echo "Generating $current_products products"
 
