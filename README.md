@@ -30,25 +30,124 @@ By default `generate-n` grows the product count **linearly**: version `i` contai
 
 When you pass `--target`, the product count is instead **interpolated from `--products` to `--target`** across the versions following an easing curve. Easing mode requires `--versions >= 2`. For version `i` of `N` the progress is `t = (i-1)/(N-1)` and the count is `round(products + easing(t) × (target − products))`. The first version always equals `--products` and the last always equals `--target`; the chosen curve only changes how the intermediate versions are distributed. Descending ranges (`target < products`) are supported.
 
-`--easing` accepts either a named curve or any raw `awk` expression of `t` (the version progress in `[0, 1]`). Available named curves:
+`--easing` accepts either a named curve or any raw `awk` expression of `t` (the version progress in `[0, 1]`).
 
-```
-linear
-easeInSine     easeOutSine     easeInOutSine
-easeInQuad     easeOutQuad     easeInOutQuad
-easeInCubic    easeOutCubic    easeInOutCubic
-easeInQuart    easeOutQuart    easeInOutQuart
-easeInQuint    easeOutQuint    easeInOutQuint
-easeInExpo     easeOutExpo     easeInOutExpo
-easeInCirc     easeOutCirc     easeInOutCirc
-easeInBack     easeOutBack     easeInOutBack
-easeInElastic  easeOutElastic  easeInOutElastic
-easeInBounce   easeOutBounce   easeInOutBounce
-```
+**Variants.** Every family comes in three flavors:
+- `easeIn*` — slow start, fast finish (growth back-loaded toward the last versions).
+- `easeOut*` — fast start, slow finish (growth front-loaded toward the first versions).
+- `easeInOut*` — slow at both ends, fast in the middle.
 
-The `Back` and `Elastic` curves intentionally **overshoot** the `[products, target]` range, so intermediate versions may dip below `--products` or rise above `--target` (counts are always clamped to at least 1). The first and last versions still equal `--products` and `--target` exactly.
+**How to read the plots.** Each plot shows the normalized curve `e(t)` over `t ∈ [0, 1]`: the dashed square is the `[0, 1]` reference range, the lower line is the `e = 0` baseline (the `--products` level), the blue line is the curve, and the two red dots are the fixed endpoints — every curve starts at `--products` (t = 0) and ends at `--target` (t = 1). Curves that leave the top or bottom of the square **overshoot** the range (see `Back` and `Elastic`).
 
-Any value that is not a known curve name is treated as a custom `awk` expression of `t`, so you can supply your own curve (e.g. `-e 't*t*t'`, which is equivalent to `easeInCubic`). A custom expression must reference `t`; a bare word or a constant is rejected to avoid silently flattening every version.
+#### Linear
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `linear` | ![linear](docs/linear.svg) | `t` | Constant rate — versions are spaced evenly. |
+
+#### Sine
+
+_Gentle trigonometric acceleration._
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `easeInSine` | ![easeInSine](docs/easeInSine.svg) | `1-cos(t*pi/2)` | slow start, fast finish (growth back-loaded). |
+| `easeOutSine` | ![easeOutSine](docs/easeOutSine.svg) | `sin(t*pi/2)` | fast start, slow finish (growth front-loaded). |
+| `easeInOutSine` | ![easeInOutSine](docs/easeInOutSine.svg) | `-(cos(pi*t)-1)/2` | slow at both ends, fast in the middle. |
+
+#### Quad
+
+_Mild polynomial acceleration (t²)._
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `easeInQuad` | ![easeInQuad](docs/easeInQuad.svg) | `t*t` | slow start, fast finish (growth back-loaded). |
+| `easeOutQuad` | ![easeOutQuad](docs/easeOutQuad.svg) | `1-(1-t)*(1-t)` | fast start, slow finish (growth front-loaded). |
+| `easeInOutQuad` | ![easeInOutQuad](docs/easeInOutQuad.svg) | `(t<0.5)?(2*t*t):(1-(-2*t+2)^2/2)` | slow at both ends, fast in the middle. |
+
+#### Cubic
+
+_Stronger acceleration (t³)._
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `easeInCubic` | ![easeInCubic](docs/easeInCubic.svg) | `t^3` | slow start, fast finish (growth back-loaded). |
+| `easeOutCubic` | ![easeOutCubic](docs/easeOutCubic.svg) | `1-(1-t)^3` | fast start, slow finish (growth front-loaded). |
+| `easeInOutCubic` | ![easeInOutCubic](docs/easeInOutCubic.svg) | `(t<0.5)?(4*t^3):(1-(-2*t+2)^3/2)` | slow at both ends, fast in the middle. |
+
+#### Quart
+
+_Steep acceleration (t⁴)._
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `easeInQuart` | ![easeInQuart](docs/easeInQuart.svg) | `t^4` | slow start, fast finish (growth back-loaded). |
+| `easeOutQuart` | ![easeOutQuart](docs/easeOutQuart.svg) | `1-(1-t)^4` | fast start, slow finish (growth front-loaded). |
+| `easeInOutQuart` | ![easeInOutQuart](docs/easeInOutQuart.svg) | `(t<0.5)?(8*t^4):(1-(-2*t+2)^4/2)` | slow at both ends, fast in the middle. |
+
+#### Quint
+
+_Very steep acceleration (t⁵)._
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `easeInQuint` | ![easeInQuint](docs/easeInQuint.svg) | `t^5` | slow start, fast finish (growth back-loaded). |
+| `easeOutQuint` | ![easeOutQuint](docs/easeOutQuint.svg) | `1-(1-t)^5` | fast start, slow finish (growth front-loaded). |
+| `easeInOutQuint` | ![easeInOutQuint](docs/easeInOutQuint.svg) | `(t<0.5)?(16*t^5):(1-(-2*t+2)^5/2)` | slow at both ends, fast in the middle. |
+
+#### Expo
+
+_Extreme: almost flat, then explosive (2^t)._
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `easeInExpo` | ![easeInExpo](docs/easeInExpo.svg) | `(t==0)?0:(2^(10*t-10))` | slow start, fast finish (growth back-loaded). |
+| `easeOutExpo` | ![easeOutExpo](docs/easeOutExpo.svg) | `(t==1)?1:(1-2^(-10*t))` | fast start, slow finish (growth front-loaded). |
+| `easeInOutExpo` | ![easeInOutExpo](docs/easeInOutExpo.svg) | `(t==0)?0:((t==1)?1:((t<0.5)?(2^(20*t-10)/2):((2-2^(-20*t+10))/2)))` | slow at both ends, fast in the middle. |
+
+#### Circ
+
+_Circular arc — abrupt near one end._
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `easeInCirc` | ![easeInCirc](docs/easeInCirc.svg) | `1-sqrt(1-t^2)` | slow start, fast finish (growth back-loaded). |
+| `easeOutCirc` | ![easeOutCirc](docs/easeOutCirc.svg) | `sqrt(1-(t-1)^2)` | fast start, slow finish (growth front-loaded). |
+| `easeInOutCirc` | ![easeInOutCirc](docs/easeInOutCirc.svg) | `(t<0.5)?((1-sqrt(1-(2*t)^2))/2):((sqrt(1-(-2*t+2)^2)+1)/2)` | slow at both ends, fast in the middle. |
+
+#### Back
+
+_Overshoots slightly past the bound before settling (anticipation)._
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `easeInBack` | ![easeInBack](docs/easeInBack.svg) | `c3*t^3-c1*t^2` | slow start, fast finish (growth back-loaded). |
+| `easeOutBack` | ![easeOutBack](docs/easeOutBack.svg) | `1+c3*(t-1)^3+c1*(t-1)^2` | fast start, slow finish (growth front-loaded). |
+| `easeInOutBack` | ![easeInOutBack](docs/easeInOutBack.svg) | `(t<0.5)?((2*t)^2*((c2+1)*2*t-c2))/2:((2*t-2)^2*((c2+1)*(2*t-2)+c2)+2)/2` | slow at both ends, fast in the middle. |
+
+#### Elastic
+
+_Springs / oscillates around the bounds (rubber-band)._
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `easeInElastic` | ![easeInElastic](docs/easeInElastic.svg) | `(t==0)?0:((t==1)?1:(-(2^(10*t-10))*sin((10*t-10.75)*c4)))` | slow start, fast finish (growth back-loaded). |
+| `easeOutElastic` | ![easeOutElastic](docs/easeOutElastic.svg) | `(t==0)?0:((t==1)?1:((2^(-10*t))*sin((10*t-0.75)*c4)+1))` | fast start, slow finish (growth front-loaded). |
+| `easeInOutElastic` | ![easeInOutElastic](docs/easeInOutElastic.svg) | `(t==0)?0:((t==1)?1:((t<0.5)?(-(2^(20*t-10))*sin((20*t-11.125)*c5))/2:(2^(-20*t+10))*sin((20*t-11.125)*c5)/2+1))` | slow at both ends, fast in the middle. |
+
+#### Bounce
+
+_Bounces like a ball coming to rest._
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `easeInBounce` | ![easeInBounce](docs/easeInBounce.svg) | `1-bounceOut(1-t)` | slow start, fast finish (growth back-loaded). |
+| `easeOutBounce` | ![easeOutBounce](docs/easeOutBounce.svg) | `bounceOut(t)` | fast start, slow finish (growth front-loaded). |
+| `easeInOutBounce` | ![easeInOutBounce](docs/easeInOutBounce.svg) | `(t<0.5)?((1-bounceOut(1-2*t))/2):((1+bounceOut(2*t-1))/2)` | slow at both ends, fast in the middle. |
+
+> **Custom curves.** Any value that is not a known curve name is treated as a custom `awk` expression of `t`, so you can supply your own (e.g. `-e 't*t*t'`, equivalent to `easeInCubic`). A custom expression must reference `t`; a bare word or a constant is rejected to avoid silently flattening every version.
+>
+> The illustrations above plot these exact `awk` expressions (the same ones defined in `generate-n`).
 
 Examples:
 ```bash
