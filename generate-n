@@ -7,8 +7,8 @@ fi
 
 show_generator_options() {
   echo "Generator options:"
-  echo "  ./generate-n --versions|-v <number> [--products|-p <number>] [--step|-s <number>] [--target|-t <number>] [--easing|-e <name|expr>] [--format|-f <format>] [--var <percentage>]"
-  echo "Shortcuts: -v, -p, -s, -t, -e, -f"
+  echo "  ./generate-n --versions|-v <number> [--products|-p <number>] [--step|-s <number>] [--target|-t <number>] [--easing|-e <name|expr>] [--patterns|-P <number>] [--format|-f <format>] [--var <percentage>]"
+  echo "Shortcuts: -v, -p, -s, -t, -e, -P, -f"
   echo ""
   echo "  --products|-p <number>  Initial product count for the first version (default: 100)"
   echo "  --step|-s <number>      Product increment per version, linear mode (default: 1000)"
@@ -30,7 +30,13 @@ show_generator_options() {
   echo "                            easeInElastic easeOutElastic easeInOutElastic"
   echo "                            easeInBounce easeOutBounce easeInOutBounce"
   echo "                          (Back and Elastic overshoot the [products,target] range.)"
+  echo "                          Periodic curves (use --patterns to set the number of cycles):"
+  echo "                            sineWave    oscillates products<->target, returns to products"
+  echo "                            sineStairs  grows to target in 'patterns' steps"
   echo "                          Example custom expression: -e 't*t*t' (same as easeInCubic)"
+  echo "  --patterns|-P <number>  Number of cycles for the periodic curves (default: 1). Models"
+  echo "                          repeated data-acquisition campaigns. Use --versions >= 4*patterns"
+  echo "                          so the waves are well sampled. Ignored by non-periodic curves."
   echo "  --var <percentage>      Variability: percentage of products that change between versions (0-100, default: 0)"
 }
 
@@ -73,14 +79,17 @@ declare -A EASINGS=(
   [easeInBounce]="1-bounceOut(1-t)"
   [easeOutBounce]="bounceOut(t)"
   [easeInOutBounce]="(t<0.5)?((1-bounceOut(1-2*t))/2):((1+bounceOut(2*t-1))/2)"
+  [sineWave]="(1-cos(2*pi*patterns*t))/2"
+  [sineStairs]="t-sin(2*pi*patterns*t)/(2*pi*patterns)"
 )
 
-# ease_value <i> <n> <start> <target> <expr>
+# ease_value <i> <n> <start> <target> <expr> [patterns]
 # Echoes the (rounded, >=1) product count for version i of n, interpolating
 # from start to target along the easing expression expr (an awk expression of t).
+# patterns (default 1) is the cycle count available to periodic curves.
 ease_value() {
-  local i="$1" n="$2" start="$3" target="$4" expr="$5"
-  awk -v i="$i" -v n="$n" -v start="$start" -v target="$target" '
+  local i="$1" n="$2" start="$3" target="$4" expr="$5" patterns="${6:-1}"
+  awk -v i="$i" -v n="$n" -v start="$start" -v target="$target" -v patterns="$patterns" '
   # Base bounce curve (easeOutBounce); easeIn/InOut variants are derived from it.
   function bounceOut(x){
     if(x<1/2.75){return 7.5625*x*x}
@@ -134,6 +143,10 @@ while [[ $# -gt 0 ]]; do
       easing="$2"
       shift; shift
       ;;
+    --patterns|-P)
+      patterns="$2"
+      shift; shift
+      ;;
     --format|-f)
       output_format="$2"
       shift; shift
@@ -158,6 +171,7 @@ number_of_versions=${number_of_versions:-}
 products_number=${products_number:-100}
 products_step=${products_step:-1000}
 products_target=${products_target:-}
+patterns=${patterns:-1}
 variability=${variability:-0}
 
 if [ -z "$number_of_versions" ]; then
@@ -175,6 +189,13 @@ fi
 if ! [[ $variability =~ ^[0-9]+$ ]] || [ "$variability" -lt 0 ] || [ "$variability" -gt 100 ]
 then
   echo "Please provide an integer between 0 and 100 for --var"
+  exit 1
+fi
+
+# check that patterns is a positive integer (number of periodic cycles)
+if ! [[ $patterns =~ ^[0-9]+$ ]] || [ "$patterns" -lt 1 ]
+then
+  echo "Please provide a positive integer for --patterns (or -P)"
   exit 1
 fi
 
@@ -215,8 +236,8 @@ if [ -n "$products_target" ]; then
   # Fail fast if the expression is invalid (awk would otherwise error every
   # version). Check both endpoints (t=0 and t=1) so curves with special-cased
   # boundaries, e.g. the Expo/Elastic guards, are exercised.
-  if ! ease_value 1 "$number_of_versions" "$products_number" "$products_target" "$easing_expr" >/dev/null 2>&1 \
-     || ! ease_value "$number_of_versions" "$number_of_versions" "$products_number" "$products_target" "$easing_expr" >/dev/null 2>&1; then
+  if ! ease_value 1 "$number_of_versions" "$products_number" "$products_target" "$easing_expr" "$patterns" >/dev/null 2>&1 \
+     || ! ease_value "$number_of_versions" "$number_of_versions" "$products_number" "$products_target" "$easing_expr" "$patterns" >/dev/null 2>&1; then
     echo "Invalid --easing expression: '$easing'"
     exit 1
   fi
@@ -224,9 +245,17 @@ elif [ -n "$easing" ]; then
   echo "--easing requires --target (or -t) to be set; ignoring --easing in linear mode" >&2
 fi
 
+# --patterns only affects the periodic easing curves, which require easing mode.
+if [ "$patterns" -ne 1 ] && [ "$easing_mode" -ne 1 ]; then
+  echo "--patterns only affects periodic easing curves; ignoring it without --target" >&2
+fi
+
 echo "Generating $number_of_versions versions"
 if [ "$easing_mode" -eq 1 ]; then
   echo "Easing mode: products from $products_number to $products_target using '$easing'"
+  if [[ $easing == sine* ]]; then
+    echo "Periodic mode: $patterns acquisition cycle(s)"
+  fi
 else
   echo "Setting products to $products_number, products step to $products_step"
 fi
@@ -248,7 +277,7 @@ prev_nt_file=""
 for i in $(seq 1 $number_of_versions)
 do
   if [ "$easing_mode" -eq 1 ]; then
-    current_products=$(ease_value "$i" "$number_of_versions" "$products_number" "$products_target" "$easing_expr")
+    current_products=$(ease_value "$i" "$number_of_versions" "$products_number" "$products_target" "$easing_expr" "$patterns")
   else
     current_products=$((products_number + i * products_step))
   fi

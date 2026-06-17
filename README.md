@@ -21,14 +21,39 @@ The `generate-n` command accepts the following arguments:
 - `--products` or `-p` (default: 100): Base product count. In linear mode it is the additive base (version `i` has `products + i × step`, so the first version is `products + step`, not `products`). In easing mode it is the exact count of the first version.
 - `--step` or `-s` (default: 1000): Product increment per version (linear mode only)
 - `--target` or `-t` (optional): Final product count (last version). Providing it enables **easing mode** (see below). When set, `--step` is ignored.
-- `--easing` or `-e` (default: linear): Easing curve used in easing mode. Accepts a named curve or a raw `awk` expression of `t`.
+- `--easing` or `-e` (default: linear): Easing curve used in easing mode. Accepts a named curve (monotonic or periodic) or a raw `awk` expression of `t`.
+- `--patterns` or `-P` (default: 1): Number of cycles for the **periodic** curves (`sineWave`, `sineStairs`), modelling repeated data-acquisition campaigns. Ignored by the other curves.
 - `--format` or `-f` (default: ttl): Output format (nt, ttl, trig, xml, sql, virt, monetdb)
 - `--var` (default: 0): Variability percentage (0-100). Controls the percentage of products that change between versions. When set to a value greater than 0, each version generates an update dataset containing the specified percentage of products as changes.
 
 #### Product evolution: linear vs. easing
 By default `generate-n` grows the product count **linearly**: version `i` contains `products + i × step` products.
 
-When you pass `--target`, the product count is instead **interpolated from `--products` to `--target`** across the versions following an easing curve. Easing mode requires `--versions >= 2`. For version `i` of `N` the progress is `t = (i-1)/(N-1)` and the count is `round(products + easing(t) × (target − products))`. The first version always equals `--products` and the last always equals `--target`; the chosen curve only changes how the intermediate versions are distributed. Descending ranges (`target < products`) are supported.
+When you pass `--target`, the product count is instead **interpolated from `--products` to `--target`** across the versions following an easing curve. Easing mode requires `--versions >= 2`. For version `i` of `N` the progress is `t = (i-1)/(N-1)` and the count is `round(products + easing(t) × (target − products))`. For monotonic curves the first version equals `--products` and the last equals `--target`; the chosen curve only changes how the intermediate versions are distributed. Descending ranges (`target < products`) are supported.
+
+#### Two kinds of evolution: monotonic ramps vs. periodic patterns
+
+The named curves fall into two families that represent different dataset evolutions:
+
+- **Monotonic ramps** — `linear` and every `ease*` curve. They grow **once** from `--products` to `--target`; they differ only in *where* along the versions the growth is concentrated (start, end, or middle).
+- **Periodic patterns** — `sineWave` and `sineStairs`. They **repeat `--patterns` times** to model several successive **data-acquisition campaigns** instead of a single ramp. `sineWave` oscillates between `--products` and `--target` (acquire then release), while `sineStairs` accumulates monotonically to `--target` in `--patterns` visible steps.
+
+#### Choosing a parametrisation (dataset-evolution scenarios)
+
+Pick the curve whose shape matches the evolution you want to benchmark:
+
+| Dataset evolution to model | Curve(s) | Example `generate-n` args |
+|---|---|---|
+| Steady, constant-rate growth | `linear` | `-v 10 -t 5000 -e linear` |
+| Slow start, late surge (delayed adoption) | `easeInQuad` · `easeInCubic` · `easeInExpo` | `-v 10 -t 5000 -e easeInCubic` |
+| Fast start, then saturation / plateau | `easeOutQuad` · `easeOutExpo` · `easeOutCirc` | `-v 10 -t 5000 -e easeOutExpo` |
+| S-curve adoption (slow → fast → slow) | `easeInOutSine` · `easeInOutCubic` | `-v 10 -t 5000 -e easeInOutCubic` |
+| Growth that overshoots then corrects | `easeOutBack` · `easeOutElastic` | `-v 12 -t 5000 -e easeOutBack` |
+| Settling with a few bounces | `easeOutBounce` | `-v 16 -t 5000 -e easeOutBounce` |
+| **Repeated acquire-then-release cycles** | `sineWave` + `--patterns` | `-v 13 -t 5000 -e sineWave -P 3` |
+| **Cumulative acquisition over N campaigns** | `sineStairs` + `--patterns` | `-v 13 -t 5000 -e sineStairs -P 3` |
+
+> For periodic curves, use `--versions >= 4 × --patterns` so each cycle is sampled by enough versions to be visible in the generated sequence.
 
 `--easing` accepts either a named curve or any raw `awk` expression of `t` (the version progress in `[0, 1]`).
 
@@ -37,7 +62,7 @@ When you pass `--target`, the product count is instead **interpolated from `--pr
 - `easeOut*` — fast start, slow finish (growth front-loaded toward the first versions).
 - `easeInOut*` — slow at both ends, fast in the middle.
 
-**How to read the plots.** Each plot shows the normalized curve `e(t)` over `t ∈ [0, 1]`: the dashed square is the `[0, 1]` reference range, the lower line is the `e = 0` baseline (the `--products` level), the blue line is the curve, and the two red dots are the fixed endpoints — every curve starts at `--products` (t = 0) and ends at `--target` (t = 1). Curves that leave the top or bottom of the square **overshoot** the range (see `Back` and `Elastic`).
+**How to read the plots.** Each plot shows the normalized curve `e(t)` over `t ∈ [0, 1]`: the dashed square is the `[0, 1]` reference range, the lower line is the `e = 0` baseline (the `--products` level), the blue line is the curve, and the two red dots are the endpoints. Monotonic curves start at `--products` (t = 0) and end at `--target` (t = 1); curves that leave the top or bottom of the square **overshoot** the range (see `Back` and `Elastic`). The **periodic** curves (`sineWave`, `sineStairs`) repeat their shape `--patterns` times — their plots use `--patterns = 3`, and `sineWave` returns to `--products` at the end rather than reaching `--target`.
 
 #### Linear
 
@@ -145,7 +170,16 @@ _Bounces like a ball coming to rest._
 | `easeOutBounce` | ![easeOutBounce](docs/easeOutBounce.svg) | `bounceOut(t)` | fast start, slow finish (growth front-loaded). |
 | `easeInOutBounce` | ![easeInOutBounce](docs/easeInOutBounce.svg) | `(t<0.5)?((1-bounceOut(1-2*t))/2):((1+bounceOut(2*t-1))/2)` | slow at both ends, fast in the middle. |
 
-> **Custom curves.** Any value that is not a known curve name is treated as a custom `awk` expression of `t`, so you can supply your own (e.g. `-e 't*t*t'`, equivalent to `easeInCubic`). A custom expression must reference `t`; a bare word or a constant is rejected to avoid silently flattening every version.
+#### Periodic (multiple data acquisition)
+
+_Repeat `--patterns` times to model several successive acquisition campaigns. The `awk` expression reads `patterns` from `--patterns`; the plots below use `--patterns = 3`._
+
+| Curve | Shape | `awk` formula `e(t)` | Behavior |
+|---|---|---|---|
+| `sineWave` | ![sineWave](docs/sineWave.svg) | `(1-cos(2*pi*patterns*t))/2` | Oscillates `--products` ↔ `--target` `patterns` times, returning to `--products` — acquire then release each cycle (diffs alternate additions/deletions). |
+| `sineStairs` | ![sineStairs](docs/sineStairs.svg) | `t-sin(2*pi*patterns*t)/(2*pi*patterns)` | Grows monotonically to `--target` in `patterns` steps — data accumulated over `patterns` campaigns. |
+
+> **Custom curves.** Any value that is not a known curve name is treated as a custom `awk` expression of `t`, so you can supply your own (e.g. `-e 't*t*t'`, equivalent to `easeInCubic`). A custom expression must reference `t`; a bare word or a constant is rejected to avoid silently flattening every version. Custom expressions may also use `patterns` (the `--patterns` value) to build their own periodic curve, e.g. `-e '(1-cos(2*pi*patterns*t))/2' -P 4`.
 >
 > The illustrations above plot these exact `awk` expressions (the same ones defined in `generate-n`).
 
@@ -156,6 +190,12 @@ docker run -v "$PWD:/app/data" vcity/bsbm generate-n -v 5 -p 100 -t 5000 -e ease
 
 # Front-loaded growth via a custom expression
 docker run -v "$PWD:/app/data" vcity/bsbm generate-n -v 5 -p 100 -t 5000 -e 'sqrt(t)'
+
+# Multiple data acquisition: 3 campaigns accumulating to 5000 products (13 versions)
+docker run -v "$PWD:/app/data" vcity/bsbm generate-n -v 13 -p 100 -t 5000 -e sineStairs -P 3
+
+# Multiple data acquisition: 3 acquire-then-release cycles between 100 and 5000 products
+docker run -v "$PWD:/app/data" vcity/bsbm generate-n -v 13 -p 100 -t 5000 -e sineWave -P 3
 ```
 
 ### Diff output files
