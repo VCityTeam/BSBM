@@ -16,4 +16,6 @@ do
   if [ ! -e "$jar" ]; then continue; fi
   CP="$CP$SEP$jar"
 done
-exec java -cp "$CP" -Xmx256M benchmark.generator.Generator "$@"
+# Heap size is overridable via BSBM_XMX (e.g. BSBM_XMX=8g) for large product
+# counts; the generator holds the whole model in memory while serializing.
+exec java -cp "$CP" -Xmx"${BSBM_XMX:-2g}" benchmark.generator.Generator "$@"

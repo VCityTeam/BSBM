@@ -23,6 +23,8 @@ The `generate-n` command accepts the following arguments:
 - `--target` or `-t` (optional): Final product count (last version). Providing it enables **easing mode** (see below). When set, `--step` is ignored.
 - `--easing` or `-e` (default: linear): Easing curve used in easing mode. Accepts a named curve (monotonic or periodic) or a raw `awk` expression of `t`.
 - `--patterns` or `-P` (default: 1): Number of cycles for the **periodic** curves (`sineWave`, `sineStairs`), modelling repeated data-acquisition campaigns. Ignored by the other curves.
+- `--concurrent` or `-c` (optional): Generate several **concurrent lineages** that share the same first version but evolve differently. Takes a comma-separated list of branch specs `curve[@target[@patterns]]`. Requires `--target`. See [Concurrent versioned graphs](#concurrent-versioned-graphs-shared-first-version-divergent-evolution).
+- `--outdir` or `-o` (default: `concurrent`): Parent output directory used by `--concurrent`. The shared first version is written as `dataset-1.<format>` here and each branch gets its own `branch-NN-<curve>/` sub-directory.
 - `--format` or `-f` (default: ttl): Output format (nt, ttl, trig, xml, sql, virt, monetdb)
 - `--var` (default: 0): Variability percentage (0-100). Controls the percentage of products that change between versions. When set to a value greater than 0, each version generates an update dataset containing the specified percentage of products as changes.
 
@@ -54,6 +56,42 @@ Pick the curve whose shape matches the evolution you want to benchmark:
 | **Cumulative acquisition over N campaigns** | `sineStairs` + `--patterns` | `-v 13 -t 5000 -e sineStairs -P 3` |
 
 > For periodic curves, use `--versions >= 4 × --patterns` so each cycle is sampled by enough versions to be visible in the generated sequence.
+
+#### Concurrent versioned graphs (shared first version, divergent evolution)
+
+The options above describe a **single** history. Sometimes you instead want **several concurrent histories of the same dataset** — they all start from the *same* first version and then evolve differently. This models situations such as parallel data-acquisition pipelines, A/B growth scenarios, or competing forecasts feeding the same initial graph. `--concurrent` produces exactly that:
+
+- **Version 1 is generated once** and is the common root shared by every branch (`dataset-1.<format>` in `--outdir`); it is byte-identical for all branches.
+- **Versions 2..N evolve independently per branch**, each following its own easing curve and, optionally, its own target and pattern count.
+
+`--concurrent` takes a comma-separated list of branch specs `curve[@target[@patterns]]`, where the optional `@target` and `@patterns` default to the global `--target` and `--patterns`. It **requires `--target`** (which also enables easing mode). Each branch is written to its own `branch-NN-<curve>/` sub-directory under `--outdir` (default `concurrent/`), and the diff of its version 2 is computed against the shared root — so the branches share their first version but diverge from version 2 onward.
+
+```bash
+# 3 concurrent 6-version histories sharing the same first version (100 products),
+# all growing toward 5000 but along different curves
+./generate-n -v 6 -p 100 -t 5000 -c "linear,easeInCubic,easeOutExpo"
+
+# Per-branch target/patterns overrides: steady growth, an early surge to 8000,
+# and 4 acquire-then-release acquisition cycles between 100 and 5000
+./generate-n -v 13 -p 100 -t 5000 -o histories \
+  -c "linear,easeInExpo@8000,sineWave@5000@4"
+```
+
+Resulting layout for the first example:
+
+```
+concurrent/
+├── dataset-1.ttl                       # shared first version (common root)
+├── branch-01-linear/
+│   ├── dataset-2.ttl … dataset-6.ttl
+│   └── dataset-{2..6}_additions.nt / _deletions.nt   # diffs vs. the previous version
+├── branch-02-easeInCubic/
+│   └── …
+└── branch-03-easeOutExpo/
+    └── …
+```
+
+`--concurrent` overrides the global `--easing`; combine it with `--var` and `--format` exactly as in single-lineage mode (those apply to every branch and to the shared root).
 
 `--easing` accepts either a named curve or any raw `awk` expression of `t` (the version progress in `[0, 1]`).
 
@@ -196,6 +234,12 @@ docker run -v "$PWD:/app/data" vcity/bsbm generate-n -v 13 -p 100 -t 5000 -e sin
 
 # Multiple data acquisition: 3 acquire-then-release cycles between 100 and 5000 products
 docker run -v "$PWD:/app/data" vcity/bsbm generate-n -v 13 -p 100 -t 5000 -e sineWave -P 3
+
+# Concurrent histories: same first version, 3 different evolutions toward 5000
+docker run -v "$PWD:/app/data" vcity/bsbm generate-n -v 6 -p 100 -t 5000 -c "linear,easeInCubic,easeOutExpo"
+
+# Concurrent histories with per-branch targets/patterns, written under "histories/"
+docker run -v "$PWD:/app/data" vcity/bsbm generate-n -v 13 -p 100 -t 5000 -o histories -c "linear,easeInExpo@8000,sineWave@5000@4"
 ```
 
 ### Diff output files
@@ -203,7 +247,21 @@ For each version >= 2, `generate-n` automatically computes the RDF diff between 
 - `dataset-X_additions.nt`: triples present in version X but not in version X-1
 - `dataset-X_deletions.nt`: triples present in version X-1 but not in version X
 
-These files are always generated in N-Triples format regardless of the `--format` option, since they are computed by comparing sorted N-Triples representations of each version.
+These files are always generated in N-Triples format regardless of the `--format` option, since they are computed by comparing sorted N-Triples representations of each version. In `--concurrent` mode the diffs live inside each `branch-NN-<curve>/` directory, and each branch's `dataset-2_*` files describe the change from the shared root (`dataset-1`) to that branch's version 2.
+
+### Memory (JVM heap)
+Generation runs two JVMs (the dataset generator, and the `DatasetDiff` step inside `generate-n`), both with a default heap of **2 GB**. A single environment variable, `BSBM_XMX`, sizes both — raise it when generating large datasets (high `--products`/`--target`):
+
+| Process | Footprint grows with |
+|---|---|
+| `generate` (the dataset generator) | The product count — it holds the whole model in memory while serializing. |
+| `generate-n` diff step (`DatasetDiff`) | The version size — it loads both consecutive N-Triples versions into memory and sorts them. |
+
+`generate-n` runs `generate` as a child process, so setting `BSBM_XMX` once in front of `generate-n` covers both: it is inherited by the generator subprocess and read directly by the diff step.
+
+```bash
+BSBM_XMX=8g ./generate-n -v 10 -p 100 -t 50000 -c "linear,easeInCubic"
+```
 
 If you want more information about the different arguments, please refer to the original documentation.
 

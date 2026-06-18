@@ -7,8 +7,8 @@ fi
 
 show_generator_options() {
   echo "Generator options:"
-  echo "  ./generate-n --versions|-v <number> [--products|-p <number>] [--step|-s <number>] [--target|-t <number>] [--easing|-e <name|expr>] [--patterns|-P <number>] [--format|-f <format>] [--var <percentage>]"
-  echo "Shortcuts: -v, -p, -s, -t, -e, -P, -f"
+  echo "  ./generate-n --versions|-v <number> [--products|-p <number>] [--step|-s <number>] [--target|-t <number>] [--easing|-e <name|expr>] [--patterns|-P <number>] [--concurrent|-c <list>] [--outdir|-o <dir>] [--format|-f <format>] [--var <percentage>]"
+  echo "Shortcuts: -v, -p, -s, -t, -e, -P, -c, -o, -f"
   echo ""
   echo "  --products|-p <number>  Initial product count for the first version (default: 100)"
   echo "  --step|-s <number>      Product increment per version, linear mode (default: 1000)"
@@ -37,6 +37,14 @@ show_generator_options() {
   echo "  --patterns|-P <number>  Number of cycles for the periodic curves (default: 1). Models"
   echo "                          repeated data-acquisition campaigns. Use --versions >= 4*patterns"
   echo "                          so the waves are well sampled. Ignored by non-periodic curves."
+  echo "  --concurrent|-c <list>  Generate several concurrent lineages that share the SAME first"
+  echo "                          version but evolve differently. <list> is a comma-separated set of"
+  echo "                          branch specs 'curve[@target[@patterns]]' (the optional @target and"
+  echo "                          @patterns default to --target and --patterns). Requires --target."
+  echo "                          Version 1 is generated once as the shared root (dataset-1) in"
+  echo "                          --outdir; each branch's versions 2..N go to its own sub-directory."
+  echo "                          Example: -t 5000 -c 'linear,easeInCubic,easeOutExpo,sineWave@5000@4'"
+  echo "  --outdir|-o <dir>       Parent directory for --concurrent output (default: concurrent)."
   echo "  --var <percentage>      Variability: percentage of products that change between versions (0-100, default: 0)"
 }
 
@@ -110,6 +118,81 @@ ease_value() {
   }'
 }
 
+# generate_one <prefix> <products>
+# Generates the dataset for one version at <prefix>.<format>, honouring --var
+# (which also emits <prefix>_update.nt). Unless the format is already nt, a
+# companion N-Triples file is produced for diffing. Echoes (on stdout) the path
+# of the N-Triples file to diff against; all progress output goes to stderr.
+generate_one() {
+  local prefix="$1" pc="$2"
+  if [ "$variability" -gt 0 ]; then
+    local ppt=$((variability * pc / 100))
+    if [ "$ppt" -lt 1 ]; then ppt=1; fi
+    echo "  generating update dataset with $ppt products changed ($variability%)" >&2
+    ./generate -s "$output_format" -pc "$pc" -fn "$prefix" -ud -tc 1 -ppt "$ppt" -ufn "${prefix}_update" >&2
+  else
+    ./generate -s "$output_format" -pc "$pc" -fn "$prefix" >&2
+  fi
+
+  if [ "$output_format" == "nt" ]; then
+    # The dataset itself is already N-Triples, so it doubles as the diff input.
+    echo "${prefix}.nt"
+  else
+    local dir base
+    dir=$(dirname "$prefix"); base=$(basename "$prefix")
+    echo "  generating N-Triples copy for diff computation" >&2
+    ./generate -s nt -pc "$pc" -fn "${dir}/.diff_${base}" >&2
+    echo "${dir}/.diff_${base}.nt"
+  fi
+}
+
+# diff_versions <prev_nt> <curr_nt> <prefix>
+# Writes the additions/deletions between two consecutive versions to
+# <prefix>_additions.nt and <prefix>_deletions.nt.
+diff_versions() {
+  local prev="$1" curr="$2" prefix="$3"
+  # DatasetDiff loads both N-Triples files into memory and sorts them, so its
+  # heap is overridable via BSBM_XMX (e.g. BSBM_XMX=8g) for large versions —
+  # the same variable that sizes the generator subprocess.
+  java -cp "$CP" -Xmx"${BSBM_XMX:-2g}" benchmark.tools.DatasetDiff \
+    "$prev" "$curr" "${prefix}_additions.nt" "${prefix}_deletions.nt"
+}
+
+# run_versions <dir> <expr> <target> <patterns> <init_prev_nt> <start_i>
+# Generates versions <start_i>..N of one lineage into <dir> (use "." for the
+# current directory), diffing each version against the previous one. When
+# <init_prev_nt> is non-empty it is the N-Triples file of the version preceding
+# <start_i> (a shared root); it is diffed against but never deleted here.
+run_versions() {
+  local dir="$1" expr="$2" target="$3" patterns="$4" prev_nt="$5" start_i="$6"
+  local prev_is_shared=0
+  if [ -n "$prev_nt" ]; then prev_is_shared=1; fi
+  local i pc pfx curr_nt
+  for i in $(seq "$start_i" "$number_of_versions"); do
+    if [ "$easing_mode" -eq 1 ]; then
+      pc=$(ease_value "$i" "$number_of_versions" "$products_number" "$target" "$expr" "$patterns")
+    else
+      pc=$((products_number + i * products_step))
+    fi
+    if [ "$dir" = "." ]; then pfx="dataset-$i"; else pfx="$dir/dataset-$i"; fi
+    echo "  version $i: $pc products"
+    curr_nt=$(generate_one "$pfx" "$pc")
+    if [ -n "$prev_nt" ]; then
+      diff_versions "$prev_nt" "$curr_nt" "$pfx"
+      if [ "$output_format" != "nt" ] && [ "$prev_is_shared" -eq 0 ]; then
+        rm -f "$prev_nt"
+      fi
+    fi
+    prev_nt="$curr_nt"
+    prev_is_shared=0
+  done
+  # Remove the trailing temp NT (kept above as prev for the diff); for the nt
+  # format the file is a real dataset, so leave it in place.
+  if [ "$output_format" != "nt" ] && [ -n "$prev_nt" ] && [ "$prev_is_shared" -eq 0 ]; then
+    rm -f "$prev_nt"
+  fi
+}
+
 if [ $# == 0 ] || [ "$1" == "-help" ]
 then
   show_generator_options
@@ -147,6 +230,14 @@ while [[ $# -gt 0 ]]; do
       patterns="$2"
       shift; shift
       ;;
+    --concurrent|-c)
+      concurrent="$2"
+      shift; shift
+      ;;
+    --outdir|-o)
+      outdir="$2"
+      shift; shift
+      ;;
     --format|-f)
       output_format="$2"
       shift; shift
@@ -173,6 +264,8 @@ products_step=${products_step:-1000}
 products_target=${products_target:-}
 patterns=${patterns:-1}
 variability=${variability:-0}
+concurrent=${concurrent:-}
+outdir=${outdir:-concurrent}
 
 if [ -z "$number_of_versions" ]; then
   echo "Please provide --versions <number> (or -v <number>)"
@@ -250,8 +343,80 @@ if [ "$patterns" -ne 1 ] && [ "$easing_mode" -ne 1 ]; then
   echo "--patterns only affects periodic easing curves; ignoring it without --target" >&2
 fi
 
+# --- Concurrent (multi-lineage) mode -----------------------------------------
+# --concurrent lists several branch evolutions that all share the same first
+# version (a single generated root) and then diverge. Each spec is
+# 'curve[@target[@patterns]]'; the optional fields fall back to --target and
+# --patterns. The branches are resolved into parallel arrays here so the
+# generation loop below can stay simple.
+declare -a br_expr br_target br_patterns br_label br_dir
+if [ -n "$concurrent" ]; then
+  if [ "$easing_mode" -ne 1 ]; then
+    echo "--concurrent requires --target (or -t): branches evolve from --products to a target via easing"
+    exit 1
+  fi
+  if [ -n "$easing" ] && [ "$easing" != "linear" ]; then
+    echo "--concurrent overrides the global --easing; each branch uses its own curve" >&2
+  fi
+  IFS=',' read -ra concurrent_specs <<< "$concurrent"
+  branch_index=0
+  for spec in "${concurrent_specs[@]}"; do
+    # Trim surrounding whitespace so 'a, b' works as well as 'a,b'.
+    spec="${spec#"${spec%%[![:space:]]*}"}"
+    spec="${spec%"${spec##*[![:space:]]}"}"
+    if [ -z "$spec" ]; then continue; fi
+    IFS='@' read -r b_easing b_target b_patterns <<< "$spec"
+    b_target="${b_target:-$products_target}"
+    b_patterns="${b_patterns:-$patterns}"
+    # Resolve the curve to an awk expression (same rules as single mode).
+    if [ -n "${EASINGS[$b_easing]+x}" ]; then
+      b_expr="${EASINGS[$b_easing]}"
+    elif [[ $b_easing =~ ^[A-Za-z][A-Za-z0-9]*$ ]]; then
+      echo "Unknown easing curve in --concurrent: '$b_easing'. Run with -help to list the curves."
+      exit 1
+    elif ! [[ $b_easing =~ (^|[^A-Za-z0-9_])t([^A-Za-z0-9_]|$) ]]; then
+      echo "Custom curve in --concurrent must be a function of t: '$b_easing'"
+      exit 1
+    else
+      b_expr="$b_easing"
+    fi
+    if ! [[ $b_target =~ ^[0-9]+$ ]]; then
+      echo "Invalid target '$b_target' for branch '$b_easing' in --concurrent"
+      exit 1
+    fi
+    if ! [[ $b_patterns =~ ^[0-9]+$ ]] || [ "$b_patterns" -lt 1 ]; then
+      echo "Invalid patterns '$b_patterns' for branch '$b_easing' in --concurrent"
+      exit 1
+    fi
+    if ! ease_value 1 "$number_of_versions" "$products_number" "$b_target" "$b_expr" "$b_patterns" >/dev/null 2>&1 \
+       || ! ease_value "$number_of_versions" "$number_of_versions" "$products_number" "$b_target" "$b_expr" "$b_patterns" >/dev/null 2>&1; then
+      echo "Invalid easing expression for branch '$b_easing' in --concurrent"
+      exit 1
+    fi
+    # Build a filesystem-safe, human-readable sub-directory name.
+    branch_index=$((branch_index + 1))
+    label="${b_easing//[^A-Za-z0-9]/_}"
+    label="${label#_}"; label="${label%_}"
+    if [ -z "$label" ]; then label="curve"; fi
+    br_expr+=("$b_expr")
+    br_target+=("$b_target")
+    br_patterns+=("$b_patterns")
+    br_label+=("$b_easing")
+    br_dir+=("$(printf 'branch-%02d-%s' "$branch_index" "$label")")
+  done
+  if [ "${#br_expr[@]}" -eq 0 ]; then
+    echo "--concurrent did not contain any branch specifications"
+    exit 1
+  fi
+fi
+
 echo "Generating $number_of_versions versions"
-if [ "$easing_mode" -eq 1 ]; then
+if [ -n "$concurrent" ]; then
+  echo "Concurrent mode: ${#br_expr[@]} branch(es) sharing version 1 ($products_number products), output under $outdir/"
+  for k in "${!br_expr[@]}"; do
+    echo "  branch $((k + 1)): ${br_label[$k]} (target ${br_target[$k]}, patterns ${br_patterns[$k]}) -> $outdir/${br_dir[$k]}/"
+  done
+elif [ "$easing_mode" -eq 1 ]; then
   echo "Easing mode: products from $products_number to $products_target using '$easing'"
   if [[ $easing == sine* ]]; then
     echo "Periodic mode: $patterns acquisition cycle(s)"
@@ -272,54 +437,27 @@ do
   CP="$CP$SEP$jar"
 done
 
-# loop through the number of versions and call ./generate
-prev_nt_file=""
-for i in $(seq 1 $number_of_versions)
-do
-  if [ "$easing_mode" -eq 1 ]; then
-    current_products=$(ease_value "$i" "$number_of_versions" "$products_number" "$products_target" "$easing_expr" "$patterns")
-  else
-    current_products=$((products_number + i * products_step))
+if [ -n "$concurrent" ]; then
+  # Concurrent lineages: generate version 1 once (the shared root), then evolve
+  # each branch independently from it into its own sub-directory.
+  mkdir -p "$outdir"
+  root_products=$(ease_value 1 "$number_of_versions" "$products_number" "$products_target" "${br_expr[0]}" "${br_patterns[0]}")
+  echo "Generating shared version 1 ($root_products products) -> $outdir/dataset-1.$output_format"
+  shared_nt=$(generate_one "$outdir/dataset-1" "$root_products")
+
+  for k in "${!br_expr[@]}"; do
+    branch_dir="$outdir/${br_dir[$k]}"
+    mkdir -p "$branch_dir"
+    echo "Branch $((k + 1))/${#br_expr[@]}: ${br_label[$k]} (target ${br_target[$k]}, patterns ${br_patterns[$k]}) -> $branch_dir/"
+    run_versions "$branch_dir" "${br_expr[$k]}" "${br_target[$k]}" "${br_patterns[$k]}" "$shared_nt" 2
+  done
+
+  # The shared-root NT was kept so every branch could diff version 2 against it.
+  if [ "$output_format" != "nt" ]; then
+    rm -f "$shared_nt"
   fi
-  echo "Generating version $i"
-  echo "Generating $current_products products"
-
-  if [ "$variability" -gt 0 ]; then
-    ppt=$((variability * current_products / 100))
-    if [ "$ppt" -lt 1 ]; then
-      ppt=1
-    fi
-    echo "Generating update dataset with $ppt products changed ($variability%)"
-    ./generate -s "$output_format" -pc "$current_products" -fn "dataset-$i" -ud -tc 1 -ppt "$ppt" -ufn "dataset-${i}_update"
-  else
-    ./generate -s "$output_format" -pc "$current_products" -fn "dataset-$i"
-  fi
-
-  # Generate N-Triples version for diff computation
-  if [ "$output_format" == "nt" ]; then
-    curr_nt_file="dataset-$i.nt"
-  else
-    echo "Generating N-Triples version for diff computation (version $i)"
-    ./generate -s nt -pc "$current_products" -fn ".diff_dataset-$i"
-    curr_nt_file=".diff_dataset-$i.nt"
-  fi
-
-  # Compute additions and deletions between consecutive versions
-  if [ -n "$prev_nt_file" ]; then
-    echo "Computing additions and deletions for version $i"
-    java -cp "$CP" -Xmx512M benchmark.tools.DatasetDiff \
-      "$prev_nt_file" "$curr_nt_file" \
-      "dataset-${i}_additions.nt" "dataset-${i}_deletions.nt"
-    # Clean up previous temp NT file
-    if [ "$output_format" != "nt" ]; then
-      rm -f "$prev_nt_file"
-    fi
-  fi
-
-  prev_nt_file="$curr_nt_file"
-done
-
-# Clean up last temp NT file
-if [ "$output_format" != "nt" ] && [ -n "$prev_nt_file" ]; then
-  rm -f "$prev_nt_file"
+  echo "Done: ${#br_expr[@]} concurrent branch(es) under $outdir/ (shared root: dataset-1.$output_format)"
+else
+  # Single lineage (legacy linear ramp or single-curve easing) in the cwd.
+  run_versions "." "$easing_expr" "$products_target" "$patterns" "" 1
 fi
